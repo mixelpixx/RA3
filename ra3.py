@@ -1,8 +1,13 @@
 import argparse  # For command-line arguments
 import faiss
 import os
+import re
+import sys
+import logging
+import getpass
 import openai
 import sqlite3
+import nltk
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from nltk.tokenize import sent_tokenize
@@ -10,9 +15,12 @@ from openai import OpenAI
 
 client = OpenAI()
 
+logging.basicConfig(level=logging.DEBUG)
+
 # Retrieve OpenAI API key from environment variable
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-openai.api_key = OPENAI_API_KEY
+os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY") or getpass.getpass("OpenAI API Key:")
+openai.api_key = os.environ["OPENAI_API_KEY"]
+
 
 # Configuration
 DOCUMENTS_PATH = './documents/'
@@ -22,14 +30,20 @@ DB_FILE = "knowledge_base.db"
 
 # Preprocessing and Chunking
 def preprocess_document(text):
-  sentences = sent_tokenize(text)
+  # Markdown-specific cleaning
+  clean_text = re.sub(r"([_*#`\[\]])|(\n|\t)", " ", text)  
+
+  # Basic cleaning (you might retain some of this)
+  clean_text = re.sub(r"[^\w\s\.]", "", clean_text)  
+
+  sentences = sent_tokenize(clean_text)
   return sentences
 
 def chunk_documents(documents_path):
   chunks = []
   for file_name in os.listdir(documents_path):
     if file_name.endswith(".txt"):
-      with open(os.path.join(documents_path, file_name), 'r') as file:
+      with open(os.path.join(documents_path, file_name), 'r', encoding='utf-8') as file:
         text = file.read()
         preprocessed_sentences = preprocess_document(text)
         chunks.extend(preprocessed_sentences)
@@ -56,7 +70,7 @@ def create_database():
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY,
             file_name TEXT,
-            text TEXT,  # Full text is now stored
+            text TEXT,  -- Full text is now stored
             embeddings BLOB
         )
     ''')
@@ -88,7 +102,7 @@ def load_embeddings(index_file="faiss_index.index"):
 
     return index, embeddings, file_names
 
-def knowledge_query(query: str, index: faiss.Index, chunks: list, file_names, top_k=3):
+def knowledge_query(query: str, index: faiss.Index, chunks: list, file_names, top_k=5):
     query_embedding = embedder.encode([query])
     distances, indices = index.search(query_embedding, k=top_k)
 
@@ -123,8 +137,8 @@ def answer_question(question, index, chunks, file_names):
         retrieved_text = "\n\n".join(result[0] for result in top_results)  # Format retrieved chunks
         try:
             openai.api_key = OPENAI_API_KEY  # Ensure the API key is set
-            response = openai.ChatCompletion.create(  # Use ChatCompletion for better context handling
-                model="gpt-3.5-turbo",
+            response = client.chat.completions.create(  
+                model="gpt-3.5-turbo-16k-0613",
                 messages=[
                     {"role": "system", "content": retrieved_text},
                     {"role": "user", "content": question}
